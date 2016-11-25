@@ -3,6 +3,7 @@ namespace ChrisBoulton\Resque\Job;
 use ChrisBoulton\Resque\Event\ResqueEvent;
 use ChrisBoulton\Resque\Exception\ResqueDontPerformException;
 use ChrisBoulton\Resque\Exception\ResqueException;
+use ChrisBoulton\Resque\Exception\ResqueRedisException;
 use ChrisBoulton\Resque\Failure\ResqueFailure;
 use ChrisBoulton\Resque\Resque;
 use ChrisBoulton\Resque\Statistic\Manager;
@@ -80,20 +81,22 @@ class Job
 		return $id;
 	}
 
-	/**
-	 * Find the next available job from the specified queue and return an
-	 * instance of Resque_Job for it.
-	 *
-	 * @param string $queue The name of the queue to check for a job in.
-	 * @return Job|false False when there aren't any waiting jobs, instance of Job when a job was found.
-	 */
+    /**
+     * Find the next available job from the specified queue and return an
+     * instance of Resque_Job for it.
+     *
+     * @param string $queue The name of the queue to check for a job in.
+     * @return Job False when there aren't any waiting jobs, instance of Job when a job was found.
+     * @throws ResqueRedisException
+     */
 	public static function reserve($queue)
 	{
 		$payload = Resque::pop($queue);
 		if(!is_array($payload)) {
-			return false;
-		}
-
+            throw new ResqueRedisException('LPOP returns wrong result.', 500, [
+                'payload' => $payload
+            ]);
+        }
 		return new Job($queue, $payload);
 	}
 

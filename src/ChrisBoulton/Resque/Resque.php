@@ -2,6 +2,7 @@
 namespace ChrisBoulton\Resque;
 use ChrisBoulton\Resque\Connection\Redis;
 use ChrisBoulton\Resque\Event\ResqueEvent;
+use ChrisBoulton\Resque\Exception\ResqueRedisException;
 use ChrisBoulton\Resque\Job\Job;
 
 /**
@@ -165,7 +166,11 @@ class Resque
 	 */
 	public static function reserve($queue)
 	{
-		return Job::reserve($queue);
+	    try {
+            return Job::reserve($queue);
+        } catch (ResqueRedisException $e) {
+	        return false;
+        }
 	}
 
 	/**

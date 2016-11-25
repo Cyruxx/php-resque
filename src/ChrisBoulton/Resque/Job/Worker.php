@@ -3,8 +3,11 @@
 namespace ChrisBoulton\Resque\Job;
 use ChrisBoulton\Resque\Event\ResqueEvent;
 use ChrisBoulton\Resque\Exception\JobDirtyException;
+use ChrisBoulton\Resque\Exception\ResqueRedisException;
 use ChrisBoulton\Resque\Resque;
 use ChrisBoulton\Resque\Statistic\Manager;
+use Psr\Log\LoggerInterface;
+use Psr\Log\NullLogger;
 
 /**
  * Resque worker that handles checking queues for jobs, fetching them
@@ -15,10 +18,6 @@ use ChrisBoulton\Resque\Statistic\Manager;
  */
 class Worker
 {
-	const LOG_NONE = 0;
-	const LOG_NORMAL = 1;
-	const LOG_VERBOSE = 2;
-
 	/**
 	 * @var int Current log level of this worker.
 	 */
@@ -59,76 +58,24 @@ class Worker
 	 */
 	private $child = null;
 
-	/**
-	 * Return all workers known to Resque as instantiated instances.
-	 * @return array
-	 */
-	public static function all()
-	{
-		$workers = Resque::redis()->smembers('workers');
-		if(!is_array($workers)) {
-			$workers = array();
-		}
+    /**
+     * @var LoggerInterface
+     */
+    private $logger;
 
-		$instances = array();
-		foreach($workers as $workerId) {
-			$instances[] = self::find($workerId);
-		}
-		return $instances;
-	}
-
-	/**
-	 * Given a worker ID, check if it is registered/valid.
-	 *
-	 * @param string $workerId ID of the worker.
-	 * @return boolean True if the worker exists, false if not.
-	 */
-	public static function exists($workerId)
-	{
-		return (bool) Resque::redis()->sismember('workers', $workerId);
-	}
-
-	/**
-	 * Given a worker ID, find it and return an instantiated worker class for it.
-	 *
-	 * @param string $workerId The ID of the worker.
-	 * @return Worker|bool Instance of the worker. False if the worker does not exist.
-	 */
-	public static function find($workerId)
-	{
-	  if(!self::exists($workerId) || false === strpos($workerId, ":")) {
-			return false;
-		}
-
-		list($hostname, $pid, $queues) = explode(':', $workerId, 3);
-		$queues = explode(',', $queues);
-		$worker = new self($queues);
-		$worker->setId($workerId);
-		return $worker;
-	}
-
-	/**
-	 * Set the ID of this worker to a given ID string.
-	 *
-	 * @param string $workerId ID for the worker.
-	 */
-	public function setId($workerId)
-	{
-		$this->id = $workerId;
-	}
-
-	/**
-	 * Instantiate a new worker, given a list of queues that it should be working
-	 * on. The list of queues should be supplied in the priority that they should
-	 * be checked for jobs (first come, first served)
-	 *
-	 * Passing a single '*' allows the worker to work on all queues in alphabetical
-	 * order. You can easily add new queues dynamically and have them worked on using
-	 * this method.
-	 *
-	 * @param string|array $queues String with a single queue name, array with multiple.
-	 */
-	public function __construct($queues)
+    /**
+     * Instantiate a new worker, given a list of queues that it should be working
+     * on. The list of queues should be supplied in the priority that they should
+     * be checked for jobs (first come, first served)
+     *
+     * Passing a single '*' allows the worker to work on all queues in alphabetical
+     * order. You can easily add new queues dynamically and have them worked on using
+     * this method.
+     *
+     * @param string|array $queues String with a single queue name, array with multiple.
+     * @param LoggerInterface $logger A logger instance
+     */
+	public function __construct($queues, LoggerInterface $logger = null)
 	{
 		if(!is_array($queues)) {
 			$queues = array($queues);
@@ -143,7 +90,26 @@ class Worker
 		}
 		$this->hostname = $hostname;
 		$this->id = $this->hostname . ':'.getmypid() . ':' . implode(',', $this->queues);
+		$this->logger = $logger ?: new NullLogger();
 	}
+
+    /**
+     * @return LoggerInterface
+     */
+    public function getLogger()
+    {
+        return $this->logger;
+    }
+
+    /**
+     * @param LoggerInterface $logger
+     * @return Worker
+     */
+    public function setLogger(LoggerInterface $logger)
+    {
+        $this->logger = $logger;
+        return $this;
+    }
 
 	/**
 	 * The primary loop for a worker which when called on an instance starts
@@ -175,7 +141,9 @@ class Worker
 					break;
 				}
 				// If no job was found, we sleep for $interval before continuing and checking again
-				$this->log('Sleeping for ' . $interval);
+                $this->logger->info('Worker: No job found. Sleeping...', [
+                    'interval' => $interval
+                ]);
 				if($this->paused) {
 					$this->updateProcLine('Paused');
 				}
@@ -186,7 +154,10 @@ class Worker
 				continue;
 			}
 
-			$this->log('got ' . $job);
+			$this->logger->info('Worker: Received job.', [
+			    'job' => $job
+            ]);
+
 			ResqueEvent::trigger('beforeFork', $job);
 			$this->workingOn($job);
 
@@ -196,7 +167,9 @@ class Worker
 			if ($this->child === 0 || $this->child === false) {
 				$status = 'Processing ' . $job->queue . ' since ' . strftime('%F %T');
 				$this->updateProcLine($status);
-				$this->log($status, self::LOG_VERBOSE);
+				$this->logger->debug('Worker: Current status.', [
+				    'status' => $status
+                ]);
 				$this->perform($job);
 				if ($this->child === 0) {
 					exit(0);
@@ -207,7 +180,10 @@ class Worker
 				// Parent process, sit and wait
 				$status = 'Forked ' . $this->child . ' at ' . strftime('%F %T');
 				$this->updateProcLine($status);
-				$this->log($status, self::LOG_VERBOSE);
+
+                $this->logger->debug('Worker: Current status.', [
+                    'status' => $status
+                ]);
 
 				// Wait until the child process finishes before continuing
 				pcntl_wait($status);
@@ -227,24 +203,162 @@ class Worker
 	}
 
 	/**
-	 * Process a single job.
+	 * On supported systems (with the PECL proctitle module installed), update
+	 * the name of the currently running process to indicate the current state
+	 * of a worker.
 	 *
-	 * @param Job $job The job to be processed.
+	 * @param string $status The updated process title.
 	 */
-	public function perform(Job $job)
+	private function updateProcLine($status)
 	{
-		try {
-			ResqueEvent::trigger('afterFork', $job);
-			$job->perform();
+		if(function_exists('setproctitle')) {
+			setproctitle('resque-' . Resque::VERSION . ': ' . $status);
 		}
-		catch(\Exception $e) {
-			$this->log($job . ' failed: ' . $e->getMessage());
-			$job->fail($e);
+	}
+
+	/**
+	 * Perform necessary actions to start a worker.
+	 */
+	private function startup()
+	{
+		$this->registerSigHandlers();
+		$this->pruneDeadWorkers();
+		ResqueEvent::trigger('beforeFirstFork', $this);
+		$this->registerWorker();
+	}
+
+	/**
+	 * Register signal handlers that a worker should respond to.
+	 *
+	 * TERM: Shutdown immediately and stop processing jobs.
+	 * INT: Shutdown immediately and stop processing jobs.
+	 * QUIT: Shutdown after the current job finishes processing.
+	 * USR1: Kill the forked child immediately and continue processing jobs.
+	 */
+	private function registerSigHandlers()
+	{
+		if(!function_exists('pcntl_signal')) {
 			return;
 		}
 
-		$job->updateStatus(JobStatus::STATUS_COMPLETE);
-		$this->log('done ' . $job);
+		declare(ticks = 1);
+		pcntl_signal(SIGTERM, array($this, 'shutDownNow'));
+		pcntl_signal(SIGINT, array($this, 'shutDownNow'));
+		pcntl_signal(SIGQUIT, array($this, 'shutdown'));
+		pcntl_signal(SIGUSR1, array($this, 'killChild'));
+		pcntl_signal(SIGUSR2, array($this, 'pauseProcessing'));
+		pcntl_signal(SIGCONT, array($this, 'unPauseProcessing'));
+		pcntl_signal(SIGPIPE, array($this, 'reestablishRedisConnection'));
+		$this->logger->debug('Worker: Registered signals.');
+	}
+
+	/**
+	 * Look for any workers which should be running on this server and if
+	 * they're not, remove them from Redis.
+	 *
+	 * This is a form of garbage collection to handle cases where the
+	 * server may have been killed and the Resque workers did not die gracefully
+	 * and therefore leave state information in Redis.
+	 */
+	public function pruneDeadWorkers()
+	{
+		$workerPids = $this->workerPids();
+		$workers = self::all();
+		foreach($workers as $worker) {
+		  if (is_object($worker)) {
+  			list($host, $pid, $queues) = explode(':', (string)$worker, 3);
+  			if($host != $this->hostname || in_array($pid, $workerPids) || $pid == getmypid()) {
+  				continue;
+  			}
+  			$this->logger->debug('Worker: Pruning dead worker.', [
+  			    'worker' => (string) $worker
+            ]);
+  			$worker->unregisterWorker();
+		  }
+		}
+	}
+
+	/**
+	 * Return an array of process IDs for all of the Resque workers currently
+	 * running on this machine.
+	 *
+	 * @return array Array of Resque worker process IDs.
+	 */
+	public function workerPids()
+	{
+		$pids = array();
+		exec('ps -A -o pid,command | grep [r]esque', $cmdOutput);
+		foreach($cmdOutput as $line) {
+			list($pids[],) = explode(' ', trim($line), 2);
+		}
+		return $pids;
+	}
+
+	/**
+	 * Return all workers known to Resque as instantiated instances.
+	 * @return array
+	 */
+	public static function all()
+	{
+		$workers = Resque::redis()->smembers('workers');
+		if(!is_array($workers)) {
+			$workers = array();
+		}
+
+		$instances = array();
+		foreach($workers as $workerId) {
+			$instances[] = self::find($workerId);
+		}
+		return $instances;
+	}
+
+	/**
+	 * Given a worker ID, find it and return an instantiated worker class for it.
+	 *
+	 * @param string $workerId The ID of the worker.
+	 * @return Worker|bool Instance of the worker. False if the worker does not exist.
+	 */
+	public static function find($workerId)
+	{
+	  if(!self::exists($workerId) || false === strpos($workerId, ":")) {
+			return false;
+		}
+
+		list($hostname, $pid, $queues) = explode(':', $workerId, 3);
+		$queues = explode(',', $queues);
+		$worker = new self($queues);
+		$worker->setId($workerId);
+		return $worker;
+	}
+
+	/**
+	 * Given a worker ID, check if it is registered/valid.
+	 *
+	 * @param string $workerId ID of the worker.
+	 * @return boolean True if the worker exists, false if not.
+	 */
+	public static function exists($workerId)
+	{
+		return (bool) Resque::redis()->sismember('workers', $workerId);
+	}
+
+	/**
+	 * Set the ID of this worker to a given ID string.
+	 *
+	 * @param string $workerId ID for the worker.
+	 */
+	public function setId($workerId)
+	{
+		$this->id = $workerId;
+	}
+
+	/**
+	 * Register this worker in Redis.
+	 */
+	public function registerWorker()
+	{
+		Resque::redis()->sadd('workers', [$this]);
+		Resque::redis()->set('worker:' . (string)$this . ':started', strftime('%a %b %d %H:%M:%S %Z %Y'));
 	}
 
 	/**
@@ -255,14 +369,35 @@ class Worker
 	public function reserve()
 	{
 		$queues = $this->queues();
+
 		if(!is_array($queues)) {
+		    $this->logger->error('Worker: Queues is not an array.', [
+		        'queues' => $queues
+            ]);
 			return false;
 		}
+
 		foreach($queues as $queue) {
-			$this->log('Checking ' . $queue, self::LOG_VERBOSE);
-			$job = Job::reserve($queue);
+		    $this->logger->debug('Worker: Checking queue.', [
+		        'queue' => $queue
+            ]);
+
+		    $job = null;
+
+            try {
+                $job = Job::reserve($queue);
+            } catch (ResqueRedisException $e) {
+                $this->logger->error('Worker: Could not get job from redis.', [
+                    'message' => $e->getMessage(),
+                    'data' => $e->getData()
+                ]);
+            }
+
 			if($job) {
-				$this->log('Found job on ' . $queue, self::LOG_VERBOSE);
+			    $this->logger->debug('Worker: Found job on queue.', [
+			        'queue' => $queue,
+                    'job'   => $job
+                ]);
 				return $job;
 			}
 		}
@@ -293,6 +428,24 @@ class Worker
 	}
 
 	/**
+	 * Tell Redis which job we're currently working on.
+	 *
+	 * @param Job $job Job instance containing the job we're working on.
+	 */
+	public function workingOn(Job $job)
+	{
+		$job->worker = $this;
+		$this->currentJob = $job;
+		$job->updateStatus(JobStatus::STATUS_RUNNING);
+		$data = json_encode(array(
+			'queue' => $job->queue,
+			'run_at' => strftime('%a %b %d %H:%M:%S %Z %Y'),
+			'payload' => $job->payload
+		));
+		Resque::redis()->set('worker:' . $job->worker, $data);
+	}
+
+	/**
 	 * Attempt to fork a child process from the parent to run a job in.
 	 *
 	 * Return values are those of pcntl_fork().
@@ -314,174 +467,41 @@ class Worker
 	}
 
 	/**
-	 * Perform necessary actions to start a worker.
-	 */
-	private function startup()
-	{
-		$this->registerSigHandlers();
-		$this->pruneDeadWorkers();
-		ResqueEvent::trigger('beforeFirstFork', $this);
-		$this->registerWorker();
-	}
-
-	/**
-	 * On supported systems (with the PECL proctitle module installed), update
-	 * the name of the currently running process to indicate the current state
-	 * of a worker.
+	 * Process a single job.
 	 *
-	 * @param string $status The updated process title.
+	 * @param Job $job The job to be processed.
 	 */
-	private function updateProcLine($status)
+	public function perform(Job $job)
 	{
-		if(function_exists('setproctitle')) {
-			setproctitle('resque-' . Resque::VERSION . ': ' . $status);
+		try {
+			ResqueEvent::trigger('afterFork', $job);
+			$job->perform();
 		}
-	}
-
-	/**
-	 * Register signal handlers that a worker should respond to.
-	 *
-	 * TERM: Shutdown immediately and stop processing jobs.
-	 * INT: Shutdown immediately and stop processing jobs.
-	 * QUIT: Shutdown after the current job finishes processing.
-	 * USR1: Kill the forked child immediately and continue processing jobs.
-	 */
-	private function registerSigHandlers()
-	{
-		if(!function_exists('pcntl_signal')) {
+		catch(\Exception $e) {
+		    $this->logger->error('Worker: Job failed.', [
+		        'job'       => $job,
+                'message'   => $e->getMessage()
+            ]);
+			$job->fail($e);
 			return;
 		}
 
-		declare(ticks = 1);
-		pcntl_signal(SIGTERM, array($this, 'shutDownNow'));
-		pcntl_signal(SIGINT, array($this, 'shutDownNow'));
-		pcntl_signal(SIGQUIT, array($this, 'shutdown'));
-		pcntl_signal(SIGUSR1, array($this, 'killChild'));
-		pcntl_signal(SIGUSR2, array($this, 'pauseProcessing'));
-		pcntl_signal(SIGCONT, array($this, 'unPauseProcessing'));
-		pcntl_signal(SIGPIPE, array($this, 'reestablishRedisConnection'));
-		$this->log('Registered signals', self::LOG_VERBOSE);
+		$job->updateStatus(JobStatus::STATUS_COMPLETE);
+		$this->logger->info('Worker: Job finished.', [
+		    'job' => $job
+        ]);
 	}
 
 	/**
-	 * Signal handler callback for USR2, pauses processing of new jobs.
+	 * Notify Redis that we've finished working on a job, clearing the working
+	 * state and incrementing the job stats.
 	 */
-	public function pauseProcessing()
+	public function doneWorking()
 	{
-		$this->log('USR2 received; pausing job processing');
-		$this->paused = true;
-	}
-
-	/**
-	 * Signal handler callback for CONT, resumes worker allowing it to pick
-	 * up new jobs.
-	 */
-	public function unPauseProcessing()
-	{
-		$this->log('CONT received; resuming job processing');
-		$this->paused = false;
-	}
-
-	/**
-	 * Signal handler for SIGPIPE, in the event the redis connection has gone away.
-	 * Attempts to reconnect to redis, or raises an Exception.
-	 */
-	public function reestablishRedisConnection()
-	{
-		$this->log('SIGPIPE received; attempting to reconnect');
-		Resque::redis()->connect();
-	}
-
-	/**
-	 * Schedule a worker for shutdown. Will finish processing the current job
-	 * and when the timeout interval is reached, the worker will shut down.
-	 */
-	public function shutdown()
-	{
-		$this->shutdown = true;
-		$this->log('Exiting...');
-	}
-
-	/**
-	 * Force an immediate shutdown of the worker, killing any child jobs
-	 * currently running.
-	 */
-	public function shutdownNow()
-	{
-		$this->shutdown();
-		$this->killChild();
-	}
-
-	/**
-	 * Kill a forked child job immediately. The job it is processing will not
-	 * be completed.
-	 */
-	public function killChild()
-	{
-		if(!$this->child) {
-			$this->log('No child to kill.', self::LOG_VERBOSE);
-			return;
-		}
-
-		$this->log('Killing child at ' . $this->child, self::LOG_VERBOSE);
-		if(exec('ps -o pid,state -p ' . $this->child, $output, $returnCode) && $returnCode != 1) {
-			$this->log('Killing child at ' . $this->child, self::LOG_VERBOSE);
-			posix_kill($this->child, SIGKILL);
-			$this->child = null;
-		}
-		else {
-			$this->log('Child ' . $this->child . ' not found, restarting.', self::LOG_VERBOSE);
-			$this->shutdown();
-		}
-	}
-
-	/**
-	 * Look for any workers which should be running on this server and if
-	 * they're not, remove them from Redis.
-	 *
-	 * This is a form of garbage collection to handle cases where the
-	 * server may have been killed and the Resque workers did not die gracefully
-	 * and therefore leave state information in Redis.
-	 */
-	public function pruneDeadWorkers()
-	{
-		$workerPids = $this->workerPids();
-		$workers = self::all();
-		foreach($workers as $worker) {
-		  if (is_object($worker)) {
-  			list($host, $pid, $queues) = explode(':', (string)$worker, 3);
-  			if($host != $this->hostname || in_array($pid, $workerPids) || $pid == getmypid()) {
-  				continue;
-  			}
-  			$this->log('Pruning dead worker: ' . (string)$worker, self::LOG_VERBOSE);
-  			$worker->unregisterWorker();
-		  }
-		}
-	}
-
-	/**
-	 * Return an array of process IDs for all of the Resque workers currently
-	 * running on this machine.
-	 *
-	 * @return array Array of Resque worker process IDs.
-	 */
-	public function workerPids()
-	{
-		$pids = array();
-		exec('ps -A -o pid,command | grep [r]esque', $cmdOutput);
-		foreach($cmdOutput as $line) {
-			list($pids[],) = explode(' ', trim($line), 2);
-		}
-		return $pids;
-	}
-
-	/**
-	 * Register this worker in Redis.
-	 */
-	public function registerWorker()
-	{
-		Resque::redis()->sadd('workers', [$this]);
-		Resque::redis()->set('worker:' . (string)$this . ':started', strftime('%a %b %d %H:%M:%S %Z %Y'));
+		$this->currentJob = null;
+		Manager::incr('processed');
+		Manager::incr('processed:' . (string)$this);
+		Resque::redis()->del('worker:' . (string)$this);
 	}
 
 	/**
@@ -502,33 +522,80 @@ class Worker
 	}
 
 	/**
-	 * Tell Redis which job we're currently working on.
-	 *
-	 * @param Job $job Job instance containing the job we're working on.
+	 * Signal handler callback for USR2, pauses processing of new jobs.
 	 */
-	public function workingOn(Job $job)
+	public function pauseProcessing()
 	{
-		$job->worker = $this;
-		$this->currentJob = $job;
-		$job->updateStatus(JobStatus::STATUS_RUNNING);
-		$data = json_encode(array(
-			'queue' => $job->queue,
-			'run_at' => strftime('%a %b %d %H:%M:%S %Z %Y'),
-			'payload' => $job->payload
-		));
-		Resque::redis()->set('worker:' . $job->worker, $data);
+	    $this->logger->debug('Worker: USR2 received; pausing job processing');
+		$this->paused = true;
 	}
 
 	/**
-	 * Notify Redis that we've finished working on a job, clearing the working
-	 * state and incrementing the job stats.
+	 * Signal handler callback for CONT, resumes worker allowing it to pick
+	 * up new jobs.
 	 */
-	public function doneWorking()
+	public function unPauseProcessing()
 	{
-		$this->currentJob = null;
-		Manager::incr('processed');
-		Manager::incr('processed:' . (string)$this);
-		Resque::redis()->del('worker:' . (string)$this);
+        $this->logger->debug('Worker: CONT received; resuming job processing');
+		$this->paused = false;
+	}
+
+	/**
+	 * Signal handler for SIGPIPE, in the event the redis connection has gone away.
+	 * Attempts to reconnect to redis, or raises an Exception.
+	 */
+	public function reestablishRedisConnection()
+	{
+        $this->logger->debug('Worker: SIGPIPE received; attempting to reconnect');
+		Resque::redis()->connect();
+	}
+
+	/**
+	 * Force an immediate shutdown of the worker, killing any child jobs
+	 * currently running.
+	 */
+	public function shutdownNow()
+	{
+		$this->shutdown();
+		$this->killChild();
+	}
+
+	/**
+	 * Schedule a worker for shutdown. Will finish processing the current job
+	 * and when the timeout interval is reached, the worker will shut down.
+	 */
+	public function shutdown()
+	{
+		$this->shutdown = true;
+        $this->logger->debug('Worker: Exiting...');
+	}
+
+	/**
+	 * Kill a forked child job immediately. The job it is processing will not
+	 * be completed.
+	 */
+	public function killChild()
+	{
+		if(!$this->child) {
+		    $this->logger->debug('Worker: No child to kill.');
+			return;
+		}
+        $this->logger->debug('Worker: Killing child.', [
+            'child' => $this->child
+        ]);
+		if(exec('ps -o pid,state -p ' . $this->child, $output, $returnCode) && $returnCode != 1) {
+			posix_kill($this->child, SIGKILL);
+			$this->child = null;
+            $this->logger->debug('Worker: Killed child.', [
+                'child' => $this->child
+            ]);
+		}
+		else {
+            $this->logger->debug('Worker: Child not found.', [
+                'child' => $this->child
+            ]);
+			$this->shutdown();
+		}
 	}
 
 	/**
@@ -539,22 +606,6 @@ class Worker
 	public function __toString()
 	{
 		return $this->id;
-	}
-
-    /**
-     * Output a given log message to STDOUT.
-     *
-     * @param string $message Message to output.
-     * @param int $verbosity
-     */
-	public function log($message, $verbosity = self::LOG_NORMAL)
-	{
-		if($verbosity == self::LOG_NORMAL || $this->logLevel == self::LOG_NORMAL) {
-			fwrite(STDOUT, "*** " . $message . "\n");
-		}
-		else if($verbosity == self::LOG_VERBOSE || $this->logLevel == self::LOG_VERBOSE) {
-			fwrite(STDOUT, "** [" . strftime('%T %Y-%m-%d') . "] " . $message . "\n");
-		}
 	}
 
 	/**

@@ -12,7 +12,6 @@ use ChrisBoulton\Resque\Job\Worker;
  */
 class ResqueFailure
 {
-    // Todo: Remove this stuff, it's not needed nor working at all
 	/**
 	 * @var string Class name representing the backend to pass failed jobs off to.
 	 */
@@ -40,7 +39,7 @@ class ResqueFailure
 	public static function getBackend()
 	{
 		if(self::$backend === null) {
-			self::$backend = 'Resque_Failure_Redis';
+			self::$backend = RedisFailure::class;
 		}
 
 		return self::$backend;
