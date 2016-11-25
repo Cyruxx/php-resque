@@ -18,7 +18,11 @@
 	},
 	"autoload": {
 		"psr-4": {
-			"ChrisBoulton\\Resque\\": "src/Resque",
+			"ChrisBoulton\\Resque\\": "src"
+		}
+	},
+	"autoload-dev": {
+		"psr-4": {
 			"ChrisBoulton\\Resque\\Tests\\": "tests"
 		}
 	},

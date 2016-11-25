@@ -352,7 +352,16 @@ class Worker
 		$this->id = $workerId;
 	}
 
-	/**
+    /**
+     * Get the id of this worker.
+     * @return string
+     */
+    public function getId()
+    {
+        return $this->id;
+    }
+
+    /**
 	 * Register this worker in Redis.
 	 */
 	public function registerWorker()

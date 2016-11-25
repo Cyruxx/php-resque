@@ -74,8 +74,8 @@ class Job
 			'id'	=> $id,
 		));
 
-		if($monitor) {
-			Job::create($id, $class);
+		if ($monitor) {
+			JobStatus::create($id);
 		}
 
 		return $id;

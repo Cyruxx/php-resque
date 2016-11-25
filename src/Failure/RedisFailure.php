@@ -1,7 +1,6 @@
 <?php
 namespace ChrisBoulton\Resque\Failure;
 use ChrisBoulton\Resque\Resque;
-use ResqueFailureInterface;
 
 /**
  * Redis backend for storing failed Resque jobs.

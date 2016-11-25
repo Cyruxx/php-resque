@@ -70,11 +70,11 @@ class JobStatus
 	 */
 	public function isTracking()
 	{
-		if($this->isTracking === false) {
+		if ($this->isTracking === false) {
 			return false;
 		}
 
-		if(!Resque::redis()->exists((string)$this)) {
+		if(!Resque::redis()->exists((string) $this)) {
 			$this->isTracking = false;
 			return false;
 		}

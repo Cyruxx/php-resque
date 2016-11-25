@@ -1,4 +1,7 @@
 <?php
+
+namespace ChrisBoulton\Resque\Failure;
+
 /**
  * Interface that all failure a backend should implement.
  *

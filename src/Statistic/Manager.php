@@ -14,7 +14,7 @@ class Manager
 	 * Get the value of the supplied statistic counter for the specified statistic.
 	 *
 	 * @param string $stat The name of the statistic to get the stats for.
-	 * @return mixed Value of the statistic.
+	 * @return int Value of the statistic.
 	 */
 	public static function get($stat)
 	{
