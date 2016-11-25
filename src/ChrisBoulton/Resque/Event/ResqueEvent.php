@@ -1,15 +1,17 @@
 <?php
+
+namespace ChrisBoulton\Resque\Event;
+
 /**
  * Resque event/plugin system class
  *
- * @package		Resque/Event
  * @author		Chris Boulton <chris@bigcommerce.com>
  * @license		http://www.opensource.org/licenses/mit-license.php
  */
-class Resque_Event
+class ResqueEvent
 {
 	/**
-	 * @var array Array containing all registered callbacks, indexked by event name.
+	 * @var array Array containing all registered callbacks, indexed by event name.
 	 */
 	private static $events = array();
 
@@ -56,7 +58,7 @@ class Resque_Event
 		self::$events[$event][] = $callback;
 		return true;
 	}
-	
+
 	/**
 	 * Stop a given callback from listening on a specific event.
 	 *

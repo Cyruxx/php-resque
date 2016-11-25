@@ -1,11 +1,13 @@
 <?php
+die('Not implemented');
+/*
 $QUEUE = getenv('QUEUE');
 if(empty($QUEUE)) {
 	die("Set QUEUE env var containing the list of queues to work.\n");
 }
 
-require_once 'lib/Resque.php';
-require_once 'lib/Resque/Worker.php';
+require_once 'src/Resque.php';
+require_once 'src/Resque/Worker.php';
 
 $REDIS_BACKEND = getenv('REDIS_BACKEND');
 if(!empty($REDIS_BACKEND)) {
@@ -76,4 +78,4 @@ else {
 	fwrite(STDOUT, '*** Starting worker '.$worker."\n");
 	$worker->work($interval);
 }
-?>
+*/

@@ -1,7 +1,12 @@
 <?php
-require_once dirname(__FILE__) . '/Event.php';
-require_once dirname(__FILE__) . '/Job/Status.php';
-require_once dirname(__FILE__) . '/Job/DontPerform.php';
+namespace ChrisBoulton\Resque\Job;
+use ChrisBoulton\Resque\Event\ResqueEvent;
+use ChrisBoulton\Resque\Exception\ResqueDontPerformException;
+use ChrisBoulton\Resque\Exception\ResqueException;
+use ChrisBoulton\Resque\Failure\ResqueFailure;
+use ChrisBoulton\Resque\Resque;
+use ChrisBoulton\Resque\Statistic\Manager;
+use InvalidArgumentException;
 
 /**
  * Resque job.
@@ -10,7 +15,7 @@ require_once dirname(__FILE__) . '/Job/DontPerform.php';
  * @author		Chris Boulton <chris@bigcommerce.com>
  * @license		http://www.opensource.org/licenses/mit-license.php
  */
-class Resque_Job
+class Job
 {
 	/**
 	 * @var string The name of the queue that this job belongs to.
@@ -18,7 +23,7 @@ class Resque_Job
 	public $queue;
 
 	/**
-	 * @var Resque_Worker Instance of the Resque worker running this job.
+	 * @var Worker Instance of the Resque worker running this job.
 	 */
 	public $worker;
 
@@ -69,7 +74,7 @@ class Resque_Job
 		));
 
 		if($monitor) {
-			Resque_Job_Status::create($id);
+			Job::create($id, $class);
 		}
 
 		return $id;
@@ -80,7 +85,7 @@ class Resque_Job
 	 * instance of Resque_Job for it.
 	 *
 	 * @param string $queue The name of the queue to check for a job in.
-	 * @return null|object Null when there aren't any waiting jobs, instance of Resque_Job when a job was found.
+	 * @return Job|false False when there aren't any waiting jobs, instance of Job when a job was found.
 	 */
 	public static function reserve($queue)
 	{
@@ -89,7 +94,7 @@ class Resque_Job
 			return false;
 		}
 
-		return new Resque_Job($queue, $payload);
+		return new Job($queue, $payload);
 	}
 
 	/**
@@ -103,7 +108,7 @@ class Resque_Job
 			return;
 		}
 
-		$statusInstance = new Resque_Job_Status($this->payload['id']);
+		$statusInstance = new JobStatus($this->payload['id']);
 		$statusInstance->update($status);
 	}
 
@@ -114,7 +119,7 @@ class Resque_Job
 	 */
 	public function getStatus()
 	{
-		$status = new Resque_Job_Status($this->payload['id']);
+		$status = new JobStatus($this->payload['id']);
 		return $status->get();
 	}
 
@@ -132,11 +137,11 @@ class Resque_Job
 		return $this->payload['args'][0];
 	}
 
-	/**
-	 * Get the instantiated object for this job that will be performing work.
-	 *
-	 * @return object Instance of the object that this job belongs to.
-	 */
+    /**
+     * Get the instantiated object for this job that will be performing work.
+     * @return object Instance of the object that this job belongs to.
+     * @throws ResqueException
+     */
 	public function getInstance()
 	{
 		if (!is_null($this->instance)) {
@@ -144,13 +149,13 @@ class Resque_Job
 		}
 
 		if(!class_exists($this->payload['class'])) {
-			throw new Resque_Exception(
+			throw new ResqueException(
 				'Could not find job class ' . $this->payload['class'] . '.'
 			);
 		}
 
 		if(!method_exists($this->payload['class'], 'perform')) {
-			throw new Resque_Exception(
+			throw new ResqueException(
 				'Job class ' . $this->payload['class'] . ' does not contain a perform method.'
 			);
 		}
@@ -167,13 +172,13 @@ class Resque_Job
 	 * associated with the job with the supplied arguments.
 	 *
 	 * @return bool
-	 * @throws Resque_Exception When the job's class could not be found or it does not contain a perform method.
+	 * @throws ResqueException When the job's class could not be found or it does not contain a perform method.
 	 */
 	public function perform()
 	{
 		$instance = $this->getInstance();
 		try {
-			Resque_Event::trigger('beforePerform', $this);
+			ResqueEvent::trigger('beforePerform', $this);
 
 			if(method_exists($instance, 'setUp')) {
 				$instance->setUp();
@@ -185,10 +190,10 @@ class Resque_Job
 				$instance->tearDown();
 			}
 
-			Resque_Event::trigger('afterPerform', $this);
+			ResqueEvent::trigger('afterPerform', $this);
 		}
 		// beforePerform/setUp have said don't perform this job. Return.
-		catch(Resque_Job_DontPerform $e) {
+		catch(ResqueDontPerformException $e) {
 			return false;
 		}
 
@@ -202,21 +207,20 @@ class Resque_Job
 	 */
 	public function fail($exception)
 	{
-		Resque_Event::trigger('onFailure', array(
+		ResqueEvent::trigger('onFailure', array(
 			'exception' => $exception,
 			'job' => $this,
 		));
 
-		$this->updateStatus(Resque_Job_Status::STATUS_FAILED);
-		require_once dirname(__FILE__) . '/Failure.php';
-		Resque_Failure::create(
+		$this->updateStatus(JobStatus::STATUS_FAILED);
+		ResqueFailure::create(
 			$this->payload,
 			$exception,
 			$this->worker,
 			$this->queue
 		);
-		Resque_Stat::incr('failed');
-		Resque_Stat::incr('failed:' . $this->worker);
+		Manager::incr('failed');
+		Manager::incr('failed:' . $this->worker);
 	}
 
 	/**
@@ -225,7 +229,7 @@ class Resque_Job
 	 */
 	public function recreate()
 	{
-		$status = new Resque_Job_Status($this->payload['id']);
+		$status = new JobStatus($this->payload['id']);
 		$monitor = false;
 		if($status->isTracking()) {
 			$monitor = true;
@@ -254,4 +258,3 @@ class Resque_Job
 		return '(' . implode(' | ', $name) . ')';
 	}
 }
-?>
