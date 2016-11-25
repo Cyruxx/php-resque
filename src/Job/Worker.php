@@ -396,7 +396,7 @@ class Worker
             try {
                 $job = Job::reserve($queue);
             } catch (ResqueRedisException $e) {
-                $this->logger->error('Worker: Could not get job from redis.', [
+                $this->logger->info('Worker: Could not get job from redis.', [
                     'message' => $e->getMessage(),
                     'data' => $e->getData()
                 ]);

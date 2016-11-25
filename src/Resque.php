@@ -110,13 +110,13 @@ class Resque
 	 * return it.
 	 *
 	 * @param string $queue The name of the queue to fetch an item from.
-	 * @return array|bool Decoded item from the queue, or false on failure.
+	 * @return array|null Decoded item from the queue, or null on failure.
 	 */
 	public static function pop($queue)
 	{
 		$item = self::redis()->lpop('queue:' . $queue);
 		if(!$item) {
-			return false;
+			return null;
 		}
 
 		return json_decode($item, true);

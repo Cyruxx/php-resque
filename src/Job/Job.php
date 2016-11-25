@@ -86,16 +86,21 @@ class Job
      * instance of Resque_Job for it.
      *
      * @param string $queue The name of the queue to check for a job in.
-     * @return Job False when there aren't any waiting jobs, instance of Job when a job was found.
+     * @return Job|false False when there aren't any waiting jobs, instance of Job when a job was found.
      * @throws ResqueRedisException
      */
 	public static function reserve($queue)
 	{
 		$payload = Resque::pop($queue);
 		if(!is_array($payload)) {
-            throw new ResqueRedisException('LPOP returns wrong result.', 500, [
-                'payload' => $payload
-            ]);
+
+            if (is_null($payload)) {
+                throw new ResqueRedisException('LPOP returns nothing.', 500, [
+                    'payload' => $payload
+                ]);
+            } else {
+                return false;
+            }
         }
 		return new Job($queue, $payload);
 	}
