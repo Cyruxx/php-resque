@@ -15,7 +15,7 @@
 		"php": ">=5.3.0",
 		"predis/predis": "^1",
 		"psr/log": "^1",
-		"symfony/console": "^3"
+		"symfony/console": "^2"
 	},
 	"autoload": {
 		"psr-4": {
